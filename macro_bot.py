@@ -41,6 +41,7 @@ class MacroApp(tk.Tk):
         self.recording = False
         self.recording_last_t = 0.0
         self.capture_active = False
+        self.capture_key_active = False
 
         self.q = queue.Queue()
         self._build_ui()
@@ -82,8 +83,9 @@ class MacroApp(tk.Tk):
         ttk.Label(key_frame, text="Клавиша:").grid(row=0, column=0, padx=6, pady=6)
         self.key_entry = ttk.Entry(key_frame, width=12)
         self.key_entry.grid(row=0, column=1, padx=2)
-        ttk.Label(key_frame, text="например: e, space, f").grid(row=0, column=2, padx=6)
-        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=3, padx=8)
+        ttk.Button(key_frame, text="Снять клавишу", command=self._capture_key).grid(row=0, column=2, padx=6)
+        ttk.Label(key_frame, text="например: e, space, f").grid(row=0, column=3, padx=6)
+        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=4, padx=8)
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -147,6 +149,14 @@ class MacroApp(tk.Tk):
                     self.y_entry.insert(0, str(data[1]))
                     self.capture_active = False
                     self._log(f"Координаты заданы по клику: ({data[0]}, {data[1]})")
+                elif kind == "key_captured":
+                    self.capture_key_active = False
+                    if data:
+                        self.key_entry.delete(0, tk.END)
+                        self.key_entry.insert(0, data)
+                        self._log(f"Клавиша задана: {data}")
+                    else:
+                        self._log("Не задано.")
                 elif kind == "stop":
                     self._stop()
                 elif kind == "record_toggle":
@@ -176,6 +186,28 @@ class MacroApp(tk.Tk):
         except ValueError:
             pass
         self.q.put(("coords", (e.x, e.y)))
+
+    def _capture_key(self):
+        if self.capture_key_active:
+            return
+        self.capture_key_active = True
+        self._log("Нажмите одну клавишу — она подставится (Esc — отмена)...")
+
+        def capture():
+            key = ""
+            while self.capture_key_active:
+                ev = keyboard.read_event(suppress=False)
+                if ev.event_type != "down":
+                    continue
+                if ev.name == "esc":
+                    break
+                if ev.name in ("f8", "f12"):
+                    continue
+                key = ev.name
+                break
+            self.q.put(("key_captured", key))
+
+        threading.Thread(target=capture, daemon=True).start()
 
     def _add_click(self):
         try:
