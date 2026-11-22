@@ -104,6 +104,28 @@ class MacroApp(tk.Tk):
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
+        top_bar = ttk.LabelFrame(self, text="Управление")
+        top_bar.pack(side="top", fill="x", padx=8, pady=(6, 0))
+        self.play_btn = ttk.Button(top_bar, text="▶ ЗАПУСТИТЬ БОТА",
+                                   command=self._start_playback)
+        self.play_btn.grid(row=0, column=0, padx=6, pady=6)
+        self.autopilot_btn = ttk.Button(top_bar, text="▶ ЗАПУСТИТЬ АВТОПИЛОТ",
+                                        command=self._toggle_autopilot)
+        self.autopilot_btn.grid(row=0, column=1, padx=6, pady=6)
+        self.stop_btn = ttk.Button(top_bar, text="■ Стоп (F12)",
+                                   command=self._stop, state="disabled")
+        self.stop_btn.grid(row=0, column=2, padx=6, pady=6)
+        self.rec_btn = ttk.Button(top_bar, text="● Запись (F8)", command=self._toggle_record)
+        self.rec_btn.grid(row=0, column=3, padx=6, pady=6)
+        ttk.Label(top_bar, text="Повторов (0 — без конца):").grid(row=1, column=0, sticky="e")
+        self.repeats_spin = ttk.Spinbox(top_bar, from_=0, to=999999, width=7)
+        self.repeats_spin.set(0)
+        self.repeats_spin.grid(row=1, column=1, sticky="w", padx=(0, 2))
+        ttk.Label(top_bar, text="Скорость:").grid(row=1, column=2, sticky="e")
+        self.speed_spin = ttk.Spinbox(top_bar, from_=0.1, to=10, increment=0.1, width=5)
+        self.speed_spin.set(1.0)
+        self.speed_spin.grid(row=1, column=3, sticky="w", padx=(0, 2))
+
         canvas = tk.Canvas(self, highlightthickness=0)
         scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
@@ -294,19 +316,16 @@ class MacroApp(tk.Tk):
         self.ai_model_entry = ttk.Entry(ai_frame, width=20)
         self.ai_model_entry.insert(0, AI_DEFAULT_MODEL)
         self.ai_model_entry.grid(row=0, column=3, padx=2)
-        ttk.Label(ai_frame, text="Проверять каждые, сек:").grid(row=1, column=0, padx=6)
-        self.ai_interval_spin = ttk.Spinbox(ai_frame, from_=1, to=60, width=5)
-        self.ai_interval_spin.set(3)
-        self.ai_interval_spin.grid(row=2, column=1, padx=2, sticky="w")
-        ttk.Label(ai_frame, text="Читалка экрана:").grid(row=1, column=1, padx=6, sticky="w")
-        self.reader_combo = ttk.Combobox(ai_frame, width=24, state="readonly",
+        ttk.Label(ai_frame, text="Читалка экрана:").grid(row=1, column=0, padx=6, sticky="w")
+        self.reader_combo = ttk.Combobox(ai_frame, width=26, state="readonly",
                                          values=["OCR (Tesseract, локально, бесплат)",
                                                  "ИИ (Mistral API)"])
         self.reader_combo.current(0)
-        self.reader_combo.grid(row=1, column=1, columnspan=1, padx=(120, 2), sticky="w")
-        self.autopilot_btn = ttk.Button(ai_frame, text="▶ Включить автопилот",
-                                        command=self._toggle_autopilot)
-        self.autopilot_btn.grid(row=2, column=2, columnspan=2, padx=8, sticky="w")
+        self.reader_combo.grid(row=1, column=1, columnspan=2, padx=2, pady=4, sticky="w")
+        ttk.Label(ai_frame, text="Проверять каждые, сек:").grid(row=1, column=3, padx=6)
+        self.ai_interval_spin = ttk.Spinbox(ai_frame, from_=1, to=60, width=5)
+        self.ai_interval_spin.set(3)
+        self.ai_interval_spin.grid(row=1, column=4, padx=2, sticky="w")
 
         delay_frame = ttk.LabelFrame(content, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -331,23 +350,6 @@ class MacroApp(tk.Tk):
                    command=lambda: self._move_step(1)).pack(pady=2)
         ttk.Button(btn_col, text="Удалить", width=10, command=self._delete_step).pack(pady=2)
         ttk.Button(btn_col, text="Очистить всё", width=10, command=self._clear_all).pack(pady=2)
-
-        play_frame = ttk.LabelFrame(content, text="Запуск")
-        play_frame.pack(fill="x", **pad)
-        ttk.Label(play_frame, text="Повторов:").grid(row=0, column=0, padx=6, pady=6)
-        self.repeats_spin = ttk.Spinbox(play_frame, from_=1, to=999999, width=8)
-        self.repeats_spin.set(1)
-        self.repeats_spin.grid(row=0, column=1, padx=2)
-        ttk.Label(play_frame, text="Скорость:").grid(row=0, column=2, padx=6)
-        self.speed_spin = ttk.Spinbox(play_frame, from_=0.1, to=10, increment=0.1, width=6)
-        self.speed_spin.set(1.0)
-        self.speed_spin.grid(row=0, column=3, padx=2)
-        self.play_btn = ttk.Button(play_frame, text="▶ Старт", command=self._start_playback)
-        self.play_btn.grid(row=0, column=4, padx=8)
-        self.stop_btn = ttk.Button(play_frame, text="■ Стоп", command=self._stop, state="disabled")
-        self.stop_btn.grid(row=0, column=5, padx=2)
-        self.rec_btn = ttk.Button(play_frame, text="● Запись", command=self._toggle_record)
-        self.rec_btn.grid(row=0, column=6, padx=8)
 
         save_frame = ttk.Frame(content)
         save_frame.pack(fill="x", **pad)
@@ -986,7 +988,7 @@ class MacroApp(tk.Tk):
             messagebox.showwarning("Macro Bot", "Сценарий пуст: добавьте клики, клавиши или паузы.")
             return
         try:
-            repeats = max(1, int(self.repeats_spin.get()))
+            repeats = max(0, int(self.repeats_spin.get()))
             speed = max(0.1, float(self.speed_spin.get().replace(",", ".")))
         except ValueError:
             messagebox.showwarning("Macro Bot", "Проверьте поля «Повторов» и «Скорость».")
@@ -998,14 +1000,18 @@ class MacroApp(tk.Tk):
 
     def _play(self, repeats, speed):
         try:
-            for rep in range(1, repeats + 1):
-                if self.stop_event.is_set():
-                    break
-                self.q.put(("log", f"Прогон {rep} из {repeats}..."))
+            rep = 0
+            while not self.stop_event.is_set():
+                rep += 1
+                label = (f"Прогон {rep}..." if repeats == 0
+                         else f"Прогон {rep} из {repeats}...")
+                self.q.put(("log", label))
                 for s in self.steps:
                     if self.stop_event.is_set():
                         return
                     self._apply_step(s, speed)
+                if repeats and rep >= repeats:
+                    break
         finally:
             self.playing = False
             self.q.put(("log", "Воспроизведение остановлено."))
