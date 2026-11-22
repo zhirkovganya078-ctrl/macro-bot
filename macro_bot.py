@@ -12,6 +12,7 @@ import base64
 import io
 import json
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -24,6 +25,7 @@ import cv2
 import keyboard
 import mouse
 import numpy as np
+import pytesseract
 from PIL import Image, ImageGrab
 
 MACRO_FILE = Path(__file__).with_name("macro.json")
@@ -33,6 +35,14 @@ AI_API_URL = "https://api.mistral.ai/v1/chat/completions"
 AI_DEFAULT_MODEL = "pixtral-large-latest"
 AI_MAX_SCREEN_WIDTH = 1280
 AI_JPEG_QUALITY = 70
+
+OCR_KEY_MAP = {
+    "пробел": "space", "space": "space",
+    "esc": "esc", "enter": "enter", "ентер": "enter",
+    "shift": "shift", "таб": "tab", "tab": "tab",
+}
+OCR_MOUSE_WORDS = {"лкм": "left", "lkm": "left", "пкм": "right", "pkm": "right"}
+OCR_ACTION_COOLDOWN = 2.5
 
 AUTOPILOT_PROMPT = (
     "Ты — модуль игрового бота. На изображении — скриншот игры. "
@@ -265,10 +275,16 @@ class MacroApp(tk.Tk):
         ttk.Label(ai_frame, text="Проверять каждые, сек:").grid(row=1, column=0, padx=6)
         self.ai_interval_spin = ttk.Spinbox(ai_frame, from_=1, to=60, width=5)
         self.ai_interval_spin.set(3)
-        self.ai_interval_spin.grid(row=1, column=1, padx=2, sticky="w")
+        self.ai_interval_spin.grid(row=2, column=1, padx=2, sticky="w")
+        ttk.Label(ai_frame, text="Читалка экрана:").grid(row=1, column=1, padx=6, sticky="w")
+        self.reader_combo = ttk.Combobox(ai_frame, width=24, state="readonly",
+                                         values=["OCR (Tesseract, локально, бесплат)",
+                                                 "ИИ (Mistral API)"])
+        self.reader_combo.current(0)
+        self.reader_combo.grid(row=1, column=1, columnspan=1, padx=(120, 2), sticky="w")
         self.autopilot_btn = ttk.Button(ai_frame, text="▶ Включить автопилот",
                                         command=self._toggle_autopilot)
-        self.autopilot_btn.grid(row=1, column=2, columnspan=2, padx=8, sticky="w")
+        self.autopilot_btn.grid(row=2, column=2, columnspan=2, padx=8, sticky="w")
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -520,15 +536,18 @@ class MacroApp(tk.Tk):
             self.autopilot_btn.config(text="▶ Включить автопилот")
             self._log("Автопилот выключен.")
             return
-        if not self.ai_key_entry.get().strip():
+        use_ocr = self.reader_combo.get().startswith("OCR")
+        if not use_ocr and not self.ai_key_entry.get().strip():
             messagebox.showwarning("Macro Bot",
-                                   "Нужен бесплатный API-ключ Mistral: console.mistral.ai → API Keys.")
+                                   "Нужен API-ключ Mistral: console.mistral.ai → API Keys.")
             return
         self._save_ai_config()
         self.autopilot = True
+        self.ocr_last = ("", 0.0)
         self.stop_event = threading.Event()
         self.autopilot_btn.config(text="■ Выключить автопилот")
-        self._log("Автопилот включён: бот читает экран и нажимает по подсказкам. F12 — стоп.")
+        mode = "OCR-локально" if use_ocr else "ИИ Mistral"
+        self._log(f"Автопилот включён ({mode}). F12 — стоп.")
         threading.Thread(target=self._autopilot_loop, daemon=True).start()
 
     def _autopilot_loop(self):
@@ -539,10 +558,25 @@ class MacroApp(tk.Tk):
         stop = self.stop_event
         while not stop.is_set():
             started = time.perf_counter()
+            use_ocr = False
             try:
-                self._autopilot_step(stop)
+                use_ocr = self.reader_combo.get().startswith("OCR")
+            except (AttributeError, tk.TclError):
+                pass
+            try:
+                if use_ocr:
+                    self._ocr_step(stop)
+                else:
+                    self._ai_step(stop)
             except requests.RequestException as e:
                 self.q.put(("log", f"Сеть/API: {e}"))
+            except pytesseract.TesseractNotFoundError:
+                self.q.put(("log", "Tesseract не установлен: скачайте установщик с "
+                                   "github.com/UB-Mannheim/tesseract/wiki (или из Microsoft "
+                                   "Store), при установке отметьте Russian. Жду 10 сек."))
+                stop.wait(10)
+            except pytesseract.TesseractError as e:
+                self.q.put(("log", f"Ошибка OCR: {e}. Установите языковой пакет русский."))
             except (KeyError, IndexError, ValueError) as e:
                 self.q.put(("log", f"Некорректный ответ модели: {e}"))
             elapsed = time.perf_counter() - started
@@ -558,7 +592,61 @@ class MacroApp(tk.Tk):
         shot.convert("RGB").save(buf, format="JPEG", quality=AI_JPEG_QUALITY)
         return base64.b64encode(buf.getvalue()).decode(), (w, h)
 
-    def _autopilot_step(self, stop):
+    def _ocr_step(self, stop):
+        screen = ImageGrab.grab()
+        data = pytesseract.image_to_data(
+            screen, lang="rus+eng", config="--psm 11",
+            output_type=pytesseract.Output.DICT)
+        best = None
+        for i, raw in enumerate(data.get("text", [])):
+            word = (raw or "").strip().lower()
+            if not word:
+                continue
+            try:
+                conf = int(float(data["conf"][i]))
+            except (ValueError, KeyError):
+                continue
+            if conf <= 40:
+                continue
+            match = re.search(r"\[([a-zа-яё]{1,12})\]", word)
+            token = match.group(1) if match else None
+            if not token:
+                continue
+            x = data["left"][i] + data["width"][i] // 2
+            y = data["top"][i] + data["height"][i] // 2
+            if token in OCR_MOUSE_WORDS:
+                action = ("click", OCR_MOUSE_WORDS[token], x, y)
+            elif token in OCR_KEY_MAP:
+                action = ("key", OCR_KEY_MAP[token], x, y)
+            elif len(token) == 1 and token.isascii() and token.isalpha():
+                action = ("key", token, x, y)
+            else:
+                continue
+            if best is None:
+                best = action
+        if best is None:
+            self.q.put(("log", "OCR: подсказок на экране нет"))
+            return
+        kind, name, x, y = best
+        fingerprint = f"{kind}:{name}:{x // 50}:{y // 50}"
+        last_fp, last_t = self.ocr_last
+        now = time.perf_counter()
+        if fingerprint == last_fp and now - last_t < OCR_ACTION_COOLDOWN:
+            return
+        self.ocr_last = (fingerprint, now)
+        if kind == "click":
+            mouse.move(x, y)
+            mouse.press(name)
+            time.sleep(KEY_PRESS_PAUSE)
+            mouse.release(name)
+            self.q.put(("log", f"OCR: [{name}] клик в ({x}, {y})"))
+        else:
+            keyboard.press(name)
+            time.sleep(KEY_PRESS_PAUSE)
+            keyboard.release(name)
+            self.q.put(("log", f"OCR: нажата клавиша {name}"))
+
+    def _ai_step(self, stop):
         screen_b64, (w, h) = self._grab_screen_b64()
         model = self.ai_model_entry.get().strip() or AI_DEFAULT_MODEL
         resp = requests.post(
