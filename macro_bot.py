@@ -1,7 +1,8 @@
-"""Macro Bot GUI: build a sequence of clicks and hotkey presses for Windows.
+"""Macro Bot GUI: build a sequence of clicks and key presses for Windows.
 
-Steps can be added manually (coordinates + button, key name, delay) or by
-capturing the current cursor position / the next pressed key.
+Steps can be added manually (coordinates + button, key name, delay). Click
+captures a point: the next mouse click anywhere sets the X/Y fields. Only
+single-key presses are supported (no modifier combos).
 
 Global hotkey F12 stops playback immediately.
 Run as Administrator if the game ignores synthetic input.
@@ -58,8 +59,8 @@ class MacroApp(tk.Tk):
         cursor_frame.pack(fill="x", **pad)
         self.cursor_label = ttk.Label(cursor_frame, text="X: ---  Y: ---", font=("Consolas", 11))
         self.cursor_label.pack(anchor="w", padx=8, pady=4)
-        ttk.Button(cursor_frame, text="Взять координаты курсора (3 сек)",
-                   command=self._pick_coords).pack(anchor="w", padx=8, pady=(0, 6))
+        ttk.Button(cursor_frame, text="Задать координаты по клику мыши",
+                   command=self._arm_click_capture).pack(anchor="w", padx=8, pady=(0, 6))
 
         click_frame = ttk.LabelFrame(self, text="Клик по координатам")
         click_frame.pack(fill="x", **pad)
@@ -76,14 +77,13 @@ class MacroApp(tk.Tk):
         self.button_combo.grid(row=0, column=5, padx=2)
         ttk.Button(click_frame, text="Добавить клик", command=self._add_click).grid(row=0, column=6, padx=8)
 
-        key_frame = ttk.LabelFrame(self, text="Нажатие клавиши / хоткея")
+        key_frame = ttk.LabelFrame(self, text="Нажатие клавиши")
         key_frame.pack(fill="x", **pad)
         ttk.Label(key_frame, text="Клавиша:").grid(row=0, column=0, padx=6, pady=6)
         self.key_entry = ttk.Entry(key_frame, width=12)
         self.key_entry.grid(row=0, column=1, padx=2)
-        ttk.Button(key_frame, text="Снять клавишу", command=self._capture_key).grid(row=0, column=2, padx=6)
-        ttk.Label(key_frame, text="например: e, space, ctrl+shift+s").grid(row=0, column=3, padx=6)
-        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=4, padx=8)
+        ttk.Label(key_frame, text="например: e, space, f").grid(row=0, column=2, padx=6)
+        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=3, padx=8)
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -140,10 +140,13 @@ class MacroApp(tk.Tk):
                 kind, data = self.q.get_nowait()
                 if kind == "log":
                     self._log(data)
-                elif kind == "key_captured":
-                    self.key_entry.delete(0, tk.END)
-                    self.key_entry.insert(0, data)
+                elif kind == "coords":
+                    self.x_entry.delete(0, tk.END)
+                    self.x_entry.insert(0, str(data[0]))
+                    self.y_entry.delete(0, tk.END)
+                    self.y_entry.insert(0, str(data[1]))
                     self.capture_active = False
+                    self._log(f"Координаты заданы по клику: ({data[0]}, {data[1]})")
                 elif kind == "stop":
                     self._stop()
                 elif kind == "record_toggle":
@@ -157,19 +160,22 @@ class MacroApp(tk.Tk):
         self.cursor_label.config(text=f"X: {x}  Y: {y}")
         self.after(100, self._update_cursor_label)
 
-    def _pick_coords(self):
-        for i in range(3, 0, -1):
-            self.after(3000 - i * 1000,
-                       lambda n=i: self.status.config(text=f"Наведите курсор... {n}"))
-        self.after(3000, self._grab_coords)
+    def _arm_click_capture(self):
+        if self.capture_active:
+            return
+        self.capture_active = True
+        mouse.hook(self._capture_click)
+        self._log("Кликните в нужном месте — координаты подставятся...")
 
-    def _grab_coords(self):
-        x, y = mouse.get_position()
-        self.x_entry.delete(0, tk.END)
-        self.x_entry.insert(0, str(x))
-        self.y_entry.delete(0, tk.END)
-        self.y_entry.insert(0, str(y))
-        self._log(f"Координаты сняты: ({x}, {y})")
+    def _capture_click(self, e):
+        if not self.capture_active or e.event_type != "down":
+            return
+        self.capture_active = False
+        try:
+            mouse.unhook(self._capture_click)
+        except ValueError:
+            pass
+        self.q.put(("coords", (e.x, e.y)))
 
     def _add_click(self):
         try:
@@ -180,38 +186,12 @@ class MacroApp(tk.Tk):
             return
         self._add_step({"type": "click", "x": x, "y": y, "button": self.button_combo.get()})
 
-    def _capture_key(self):
-        if self.capture_active:
-            return
-        self.capture_active = True
-        self._log("Нажмите клавишу или сочетание (Esc - отмена)...")
 
-        def capture():
-            names = []
-            combo = ""
-            while self.capture_active:
-                ev = keyboard.read_event(suppress=False)
-                if ev.event_type != "down" or ev.name == "esc":
-                    if ev.event_type == "down" and ev.name == "esc":
-                        break
-                    continue
-                if ev.name not in names:
-                    names.append(ev.name)
-                if ev.name not in MODIFIER_KEYS and not keyboard.is_pressed("shift"):
-                    break
-            self.capture_active = False
-            if len(names) > 1:
-                combo = "+".join(names[::-1])
-            elif names:
-                combo = names[0]
-            self.q.put(("key_captured", combo))
-
-        threading.Thread(target=capture, daemon=True).start()
 
     def _add_key(self):
         name = self.key_entry.get().strip().lower()
         if not name:
-            messagebox.showwarning("Macro Bot", "Укажите клавишу или снимите её кнопкой «Снять клавишу».")
+            messagebox.showwarning("Macro Bot", "Укажите название клавиши, например: e, space, f.")
             return
         self._add_step({"type": "key", "key": name})
 
