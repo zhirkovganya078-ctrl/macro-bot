@@ -40,9 +40,15 @@ class AhkBot(tk.Tk):
 
         self._build_ui()
 
-        keyboard.add_hotkey("f12", self._on_f12)
-        keyboard.add_hotkey("insert", lambda: self.q.put(("hide_toggle", None)))
-        mouse.hook(self._on_mouse)
+        try:
+            keyboard.add_hotkey("f12", self._on_f12)
+            keyboard.add_hotkey("insert", lambda: self.q.put(("hide_toggle", None)))
+        except Exception:
+            self.after(200, lambda: self._log("Клавиатурные хуки не заработали — запустите от имени администратора"))
+        try:
+            mouse.hook(self._on_mouse)
+        except Exception:
+            self.after(200, lambda: self._log("Хуки мыши не заработали — запустите от имени администратора"))
         self.after(100, self._poll_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -229,5 +235,26 @@ class AhkBot(tk.Tk):
             self.active_cancels.remove(cancel)
             self._finish("running_mbutton")
 
+    def _on_close(self):
+        self.stop_event.set()
+        for c in list(self.active_cancels):
+            c.set()
+        try:
+            mouse.unhook_all()
+            keyboard.unhook_all()
+        except Exception:
+            pass
+        self.destroy()
+
     def _log_safe(self, msg):
         self.q.put(("log", msg))
+
+
+if __name__ == "__main__":
+    try:
+        AhkBot().mainloop()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        input("Произошла ошибка — сделайте скриншот этого окна и отправьте мне. "
+              "Enter — закрыть...")
