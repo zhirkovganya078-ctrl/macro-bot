@@ -30,6 +30,8 @@ from PIL import Image, ImageGrab
 
 MACRO_FILE = Path(__file__).with_name("macro.json")
 TEMPLATE_DIR = Path(__file__).with_name("templates")
+TRIGGERS_FILE = Path(__file__).with_name("triggers.json")
+TRIGGER_MOUSE = ("WheelUp", "WheelDown", "Middle button")
 AI_CONFIG_FILE = Path(__file__).with_name("ai_config.json")
 AI_API_URL = "https://api.mistral.ai/v1/chat/completions"
 AI_DEFAULT_MODEL = "pixtral-large-latest"
@@ -72,8 +74,8 @@ class MacroApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Macro Bot")
-        self.geometry("540x600")
-        self.minsize(460, 420)
+        self.geometry("500x420")
+        self.minsize(460, 360)
 
         self.steps = []
         self.stop_event = threading.Event()
@@ -82,6 +84,10 @@ class MacroApp(tk.Tk):
         self.recording = False
         self.hidden = False
         self.recording_last_t = 0.0
+        self.triggers = {}
+        self._trigger_running = False
+        self._trigger_mouse_hooked = False
+        self._trigger_kb_handles = []
         self.capture_active = False
         self.capture_key_active = False
         self.capture_bar_active = False
@@ -93,6 +99,9 @@ class MacroApp(tk.Tk):
         self._apply_topmost()
         self._load_silent()
         self._load_ai_config()
+        self._load_triggers()
+        self._update_trigger_label()
+        self._arm_triggers()
 
         keyboard.add_hotkey("f12", lambda: self.q.put(("stop", None)))
         keyboard.add_hotkey("f8", lambda: self.q.put(("record_toggle", None)))
@@ -350,6 +359,20 @@ class MacroApp(tk.Tk):
                    command=lambda: self._move_step(1)).pack(pady=2)
         ttk.Button(btn_col, text="Удалить", width=10, command=self._delete_step).pack(pady=2)
         ttk.Button(btn_col, text="Очистить всё", width=10, command=self._clear_all).pack(pady=2)
+
+        trig_frame = ttk.LabelFrame(content, text="Триггеры: голова мыши/клавиша запускает сценарий (как в AutoHotkey)")
+        trig_frame.pack(fill="x", **pad)
+        ttk.Label(trig_frame, text="Триггер:").grid(row=0, column=0, padx=6, pady=6)
+        self.trigger_combo = ttk.Combobox(trig_frame, values=list(TRIGGER_MOUSE), width=14)
+        self.trigger_combo.current(0)
+        self.trigger_combo.grid(row=0, column=1, padx=2)
+        ttk.Label(trig_frame, text="(можно вписать любую клавишу, например e)").grid(row=0, column=2, padx=2)
+        ttk.Button(trig_frame, text="Назначить текущий сценарий",
+                   command=self._assign_trigger).grid(row=0, column=3, padx=6)
+        ttk.Button(trig_frame, text="Снять триггер",
+                   command=self._remove_trigger).grid(row=0, column=4, padx=2)
+        self.trig_label = ttk.Label(trig_frame, text="", foreground="#555")
+        self.trig_label.grid(row=1, column=0, columnspan=5, sticky="w", padx=6, pady=(0, 4))
 
         save_frame = ttk.Frame(content)
         save_frame.pack(fill="x", **pad)
@@ -1118,6 +1141,120 @@ class MacroApp(tk.Tk):
         self.play_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self._log("Остановлено.")
+
+    def _load_triggers(self):
+        if not TRIGGERS_FILE.exists():
+            return
+        try:
+            data = json.loads(TRIGGERS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                self.triggers = {str(k): list(v) for k, v in data.items()
+                                 if isinstance(v, list)}
+        except (json.JSONDecodeError, OSError):
+            self.triggers = {}
+
+    def _save_triggers(self):
+        TRIGGERS_FILE.write_text(json.dumps(self.triggers, indent=2, ensure_ascii=False),
+                                encoding="utf-8")
+
+    def _update_trigger_label(self):
+        names = ", ".join(f"{n} ({len(v)} шаг.)" for n, v in self.triggers.items()) or "нет"
+        self.trig_label.config(text=f"Назначено: {names}")
+
+    def _canonical_trigger(self):
+        name = self.trigger_combo.get().strip()
+        for tm in TRIGGER_MOUSE:
+            if name.lower() == tm.lower():
+                return tm
+        return name.lower()
+
+    def _assign_trigger(self):
+        if not self.steps:
+            messagebox.showwarning("Macro Bot",
+                                   "Сценарий пуст: соберите шаги, потом назначьте их триггеру.")
+            return
+        name = self._canonical_trigger()
+        if name in TRIGGER_MOUSE:
+            pass
+        elif name in ("f8", "f12", "insert", ""):
+            messagebox.showwarning("Macro Bot", "Эта клавиша занята ботом (F8/F12/Ins).")
+            return
+        self.triggers[name] = self.steps
+        self.steps = []
+        self._refresh_list()
+        self._save_triggers()
+        self._arm_triggers()
+        self._update_trigger_label()
+        self._log(f"Сценарий назначен триггеру {name}. Теперь при нажатии он выполнится сам.")
+
+    def _remove_trigger(self):
+        name = self._canonical_trigger()
+        if name in self.triggers:
+            del self.triggers[name]
+            self._save_triggers()
+            self._arm_triggers()
+            self._update_trigger_label()
+            self._log(f"Триггер {name} снят.")
+
+    def _arm_triggers(self):
+        if self._trigger_mouse_hooked:
+            try:
+                mouse.unhook(self._trigger_hook)
+            except ValueError:
+                pass
+            self._trigger_mouse_hooked = False
+        for h in self._trigger_kb_handles:
+            try:
+                keyboard.remove_hotkey(h)
+            except (KeyError, ValueError):
+                pass
+        self._trigger_kb_handles = []
+        names = set(self.triggers)
+        if names & set(TRIGGER_MOUSE):
+            mouse.hook(self._trigger_hook)
+            self._trigger_mouse_hooked = True
+        for name in names - set(TRIGGER_MOUSE):
+            try:
+                self._trigger_kb_handles.append(
+                    keyboard.add_hotkey(name, self._fire_trigger, args=(name,)))
+            except (ValueError, keyboard.KeyboardException):
+                self._log(f"Не удалось назначить клавишу {name} как триггер.")
+
+    def _fire_trigger(self, name):
+        if self.recording:
+            return
+        self._run_trigger(name)
+
+    def _trigger_hook(self, e):
+        if self._trigger_running or self.recording:
+            return
+        button = getattr(e, "button", None)
+        if button == "middle" and getattr(e, "event_type", None) == "down":
+            self._run_trigger("Middle button")
+            return
+        delta = getattr(e, "delta", None)
+        if delta:
+            self._run_trigger("WheelUp" if delta > 0 else "WheelDown")
+
+    def _run_trigger(self, name):
+        steps = self.triggers.get(name)
+        if not steps or self._trigger_running:
+            return
+        self._trigger_running = True
+        self._log(f"Триггер {name}: выполняю ({len(steps)} шагов)")
+
+        def worker():
+            try:
+                for s in steps:
+                    if self.stop_event.is_set():
+                        return
+                    self._apply_step(s, 1.0)
+            except Exception as e:
+                self._log(f"Ошибка триггера {name}: {e}")
+            finally:
+                self._trigger_running = False
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save(self):
         MACRO_FILE.write_text(json.dumps(self.steps, indent=2, ensure_ascii=False),

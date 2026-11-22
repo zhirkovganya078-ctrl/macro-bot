@@ -3,3 +3,4 @@ __pycache__/
 macro.json
 templates/
 ai_config.json
+triggers.json
