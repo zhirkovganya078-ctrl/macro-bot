@@ -88,6 +88,7 @@ class MacroApp(tk.Tk):
 
         self.q = queue.Queue()
         self._build_ui()
+        self._apply_topmost()
         self._load_silent()
         self._load_ai_config()
 
@@ -350,8 +351,16 @@ class MacroApp(tk.Tk):
         ttk.Button(save_frame, text="Сохранить в файл", command=self._save).pack(side="left", padx=2)
         ttk.Button(save_frame, text="Загрузить из файла", command=self._load).pack(side="left", padx=2)
 
+        self.topmost_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(save_frame, text="Поверх всех окон",
+                        variable=self.topmost_var,
+                        command=self._apply_topmost).pack(side="left", padx=12)
+
         self.status = ttk.Label(content, text="Готов.", foreground="#555")
         self.status.pack(anchor="w", **pad)
+
+    def _apply_topmost(self):
+        self.attributes("-topmost", bool(self.topmost_var.get()))
 
     def _poll_queue(self):
         try:
