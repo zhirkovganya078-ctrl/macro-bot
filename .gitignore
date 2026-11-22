@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 macro.json
 templates/
+ai_config.json

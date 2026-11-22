@@ -8,6 +8,8 @@ Global hotkey F12 stops playback immediately.
 Run as Administrator if the game ignores synthetic input.
 """
 
+import base64
+import io
 import json
 import queue
 import threading
@@ -15,6 +17,8 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
+
+import requests
 
 import cv2
 import keyboard
@@ -24,6 +28,28 @@ from PIL import Image, ImageGrab
 
 MACRO_FILE = Path(__file__).with_name("macro.json")
 TEMPLATE_DIR = Path(__file__).with_name("templates")
+AI_CONFIG_FILE = Path(__file__).with_name("ai_config.json")
+AI_API_URL = "https://api.mistral.ai/v1/chat/completions"
+AI_DEFAULT_MODEL = "pixtral-large-latest"
+AI_MAX_SCREEN_WIDTH = 1280
+AI_JPEG_QUALITY = 70
+
+AUTOPILOT_PROMPT = (
+    "Ты — модуль игрового бота. На изображении — скриншот игры. "
+    "Прочитай подсказки, задания и события на экране и реши, что бот должен сделать сейчас: "
+    "нажать клавишу и/или кликнуть мышью в точку. "
+    "Учитывай подсказки вида [ПРОБЕЛ], [ЛКМ], «Нажимайте…», шкалы прогресса и задания. "
+    "Учти: зажатые ранее клавиши уже отпущены; не рекомендуй действия, которых экран не требует. "
+    "Ответь ТОЛЬКО строго одним JSON-объектом без пояснений:\n"
+    '{"action": "key" | "click" | "key_and_click" | "none", '
+    '"key": "<имя клавиши, например space>, или null", '
+    '"x": <0..1 или null>, "y": <0..1 или null>, "comment": "<что прочитал на экране>"}\n'
+    "x, y — точка клика в долях размера скриншота. Если на экране ничего нажимать не надо "
+    '(например, идёт ожидание), верни {"action": "none", "key": null, "x": null, "y": null, '
+    '"comment": "<что происходит>"}. '
+    "Для [ПРОБЕЛ] используй key=space. Для [ЛКМ] — click без key. "
+    "Для [ПКМ] — click (key=null) и слово ПКМ в comment; бот нажмёт правую кнопку.")
+
 KEY_PRESS_PAUSE = 0.03
 
 BUTTON_NAMES = {"left": "ЛКМ", "right": "ПКМ", "middle": "СКМ"}
@@ -53,6 +79,7 @@ class MacroApp(tk.Tk):
         self.q = queue.Queue()
         self._build_ui()
         self._load_silent()
+        self._load_ai_config()
 
         keyboard.add_hotkey("f12", lambda: self.q.put(("stop", None)))
         keyboard.add_hotkey("f8", lambda: self.q.put(("record_toggle", None)))
@@ -225,6 +252,23 @@ class MacroApp(tk.Tk):
         ttk.Button(find_frame, text="Добавить «найти и нажать»",
                    command=self._add_find).grid(row=0, column=10, padx=8)
         self._refresh_templates()
+
+        ai_frame = ttk.LabelFrame(self, text="ИИ-автопилот: бот читает экран и сам жмёт нужное")
+        ai_frame.pack(fill="x", **pad)
+        ttk.Label(ai_frame, text="API-ключ Mistral:").grid(row=0, column=0, padx=6, pady=6)
+        self.ai_key_entry = ttk.Entry(ai_frame, width=34, show="*")
+        self.ai_key_entry.grid(row=0, column=1, padx=2)
+        ttk.Label(ai_frame, text="Модель:").grid(row=0, column=2, padx=6)
+        self.ai_model_entry = ttk.Entry(ai_frame, width=20)
+        self.ai_model_entry.insert(0, AI_DEFAULT_MODEL)
+        self.ai_model_entry.grid(row=0, column=3, padx=2)
+        ttk.Label(ai_frame, text="Проверять каждые, сек:").grid(row=1, column=0, padx=6)
+        self.ai_interval_spin = ttk.Spinbox(ai_frame, from_=1, to=60, width=5)
+        self.ai_interval_spin.set(3)
+        self.ai_interval_spin.grid(row=1, column=1, padx=2, sticky="w")
+        self.autopilot_btn = ttk.Button(ai_frame, text="▶ Включить автопилот",
+                                        command=self._toggle_autopilot)
+        self.autopilot_btn.grid(row=1, column=2, columnspan=2, padx=8, sticky="w")
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -452,6 +496,115 @@ class MacroApp(tk.Tk):
         r, g, b = ImageGrab.grab(bbox=(bar_point[0], bar_point[1],
                                        bar_point[0] + 1, bar_point[1] + 1)).getpixel((0, 0))[:3]
         return abs(r - empty_color[0]) + abs(g - empty_color[1]) + abs(b - empty_color[2]) > 60
+
+    def _load_ai_config(self):
+        if AI_CONFIG_FILE.exists():
+            try:
+                cfg = json.loads(AI_CONFIG_FILE.read_text(encoding="utf-8"))
+                self.ai_key_entry.insert(0, cfg.get("api_key", ""))
+                self.ai_model_entry.delete(0, tk.END)
+                self.ai_model_entry.insert(0, cfg.get("model") or AI_DEFAULT_MODEL)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    def _save_ai_config(self):
+        AI_CONFIG_FILE.write_text(json.dumps({
+            "api_key": self.ai_key_entry.get().strip(),
+            "model": self.ai_model_entry.get().strip() or AI_DEFAULT_MODEL,
+        }), encoding="utf-8")
+
+    def _toggle_autopilot(self):
+        if self.autopilot:
+            self.autopilot = False
+            self.stop_event.set()
+            self.autopilot_btn.config(text="▶ Включить автопилот")
+            self._log("Автопилот выключен.")
+            return
+        if not self.ai_key_entry.get().strip():
+            messagebox.showwarning("Macro Bot",
+                                   "Нужен бесплатный API-ключ Mistral: console.mistral.ai → API Keys.")
+            return
+        self._save_ai_config()
+        self.autopilot = True
+        self.stop_event = threading.Event()
+        self.autopilot_btn.config(text="■ Выключить автопилот")
+        self._log("Автопилот включён: бот читает экран и нажимает по подсказкам. F12 — стоп.")
+        threading.Thread(target=self._autopilot_loop, daemon=True).start()
+
+    def _autopilot_loop(self):
+        try:
+            interval = max(1.0, float(self.ai_interval_spin.get().replace(",", ".")))
+        except (ValueError, AttributeError):
+            interval = 3.0
+        stop = self.stop_event
+        while not stop.is_set():
+            started = time.perf_counter()
+            try:
+                self._autopilot_step(stop)
+            except requests.RequestException as e:
+                self.q.put(("log", f"Сеть/API: {e}"))
+            except (KeyError, IndexError, ValueError) as e:
+                self.q.put(("log", f"Некорректный ответ модели: {e}"))
+            elapsed = time.perf_counter() - started
+            stop.wait(max(0.5, interval - elapsed))
+
+    def _grab_screen_b64(self):
+        shot = ImageGrab.grab()
+        w, h = shot.size
+        if shot.width > AI_MAX_SCREEN_WIDTH:
+            ratio = AI_MAX_SCREEN_WIDTH / shot.width
+            shot = shot.resize((AI_MAX_SCREEN_WIDTH, int(shot.height * ratio)))
+        buf = io.BytesIO()
+        shot.convert("RGB").save(buf, format="JPEG", quality=AI_JPEG_QUALITY)
+        return base64.b64encode(buf.getvalue()).decode(), (w, h)
+
+    def _autopilot_step(self, stop):
+        screen_b64, (w, h) = self._grab_screen_b64()
+        model = self.ai_model_entry.get().strip() or AI_DEFAULT_MODEL
+        resp = requests.post(
+            AI_API_URL,
+            headers={"Authorization": f"Bearer {self.ai_key_entry.get().strip()}"},
+            json={
+                "model": model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": AUTOPILOT_PROMPT},
+                        {"type": "image_url",
+                         "image_url": f"data:image/jpeg;base64,{screen_b64}"},
+                    ],
+                }],
+                "temperature": 0,
+                "max_tokens": 200,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        answer = resp.json()["choices"][0]["message"]["content"].strip()
+        data = json.loads(answer[answer.index("{"): answer.rindex("}") + 1])
+        comment = data.get("comment", "")
+        action = data.get("action", "none")
+        if action == "none":
+            self.q.put(("log", f"Экран: {comment}" if comment else "Экран: действий не требуется"))
+            return
+        use_right = "пкм" in comment.lower()
+        button = "right" if use_right else "left"
+        key = data.get("key")
+        x, y = data.get("x"), data.get("y")
+        if key and key in ("left", "right", "middle"):
+            x, y, key = x, y, None
+        if action in ("click", "key_and_click") and x is not None and y is not None:
+            px, py = int(float(x) * w), int(float(y) * h)
+            mouse.move(px, py)
+            mouse.press(button)
+            time.sleep(KEY_PRESS_PAUSE)
+            mouse.release(button)
+            self.q.put(("log", f"Клик {button} в ({px}, {py}). {comment}"))
+        if key and action in ("key", "key_and_click"):
+            keyboard.press(key)
+            time.sleep(KEY_PRESS_PAUSE)
+            keyboard.release(key)
+            self.q.put(("log", f"Нажата клавиша {key}. {comment}"))
 
     def _refresh_templates(self):
         names = sorted(p.name for p in TEMPLATE_DIR.glob("*.png"))
@@ -822,6 +975,10 @@ class MacroApp(tk.Tk):
 
     def _stop(self):
         self.stop_event.set()
+        if self.autopilot:
+            self.autopilot = False
+            self.autopilot_btn.config(text="▶ Включить автопилот")
+            self._log("Автопилот остановлен.")
         if self.recording:
             self._stop_recording()
         self.play_btn.config(state="normal")
