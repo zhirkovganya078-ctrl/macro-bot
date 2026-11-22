@@ -76,7 +76,15 @@ class MacroApp(tk.Tk):
                                          values=list(BUTTON_NAMES))
         self.button_combo.current(0)
         self.button_combo.grid(row=0, column=5, padx=2)
-        ttk.Button(click_frame, text="Добавить клик", command=self._add_click).grid(row=0, column=6, padx=8)
+        ttk.Label(click_frame, text="Раз:").grid(row=0, column=6, padx=6)
+        self.click_times_entry = ttk.Entry(click_frame, width=5)
+        self.click_times_entry.insert(0, "1")
+        self.click_times_entry.grid(row=0, column=7, padx=2)
+        ttk.Label(click_frame, text="Интервал, сек:").grid(row=0, column=8, padx=6)
+        self.click_interval_entry = ttk.Entry(click_frame, width=5)
+        self.click_interval_entry.insert(0, "0.3")
+        self.click_interval_entry.grid(row=0, column=9, padx=2)
+        ttk.Button(click_frame, text="Добавить клик", command=self._add_click).grid(row=0, column=10, padx=8)
 
         key_frame = ttk.LabelFrame(self, text="Нажатие клавиши")
         key_frame.pack(fill="x", **pad)
@@ -85,7 +93,28 @@ class MacroApp(tk.Tk):
         self.key_entry.grid(row=0, column=1, padx=2)
         ttk.Button(key_frame, text="Снять клавишу", command=self._capture_key).grid(row=0, column=2, padx=6)
         ttk.Label(key_frame, text="например: e, space, f").grid(row=0, column=3, padx=6)
-        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=4, padx=8)
+        ttk.Label(key_frame, text="Раз:").grid(row=0, column=4, padx=6)
+        self.key_times_entry = ttk.Entry(key_frame, width=5)
+        self.key_times_entry.insert(0, "1")
+        self.key_times_entry.grid(row=0, column=5, padx=2)
+        ttk.Label(key_frame, text="Удерживать, сек:").grid(row=0, column=6, padx=6)
+        self.key_hold_entry = ttk.Entry(key_frame, width=5)
+        self.key_hold_entry.insert(0, "0.1")
+        self.key_hold_entry.grid(row=0, column=7, padx=2)
+        ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=8, padx=8)
+
+        walk_frame = ttk.LabelFrame(self, text="Ходьба (зажать клавиши на время)")
+        walk_frame.pack(fill="x", **pad)
+        ttk.Label(walk_frame, text="Клавиши (через +):", ).grid(row=0, column=0, padx=6, pady=6)
+        self.walk_keys_entry = ttk.Entry(walk_frame, width=10)
+        self.walk_keys_entry.insert(0, "w")
+        self.walk_keys_entry.grid(row=0, column=1, padx=2)
+        ttk.Label(walk_frame, text="Секунд:").grid(row=0, column=2, padx=6)
+        self.walk_secs_entry = ttk.Entry(walk_frame, width=6)
+        self.walk_secs_entry.insert(0, "3.0")
+        self.walk_secs_entry.grid(row=0, column=3, padx=2)
+        ttk.Button(walk_frame, text="Добавить ходьбу", command=self._add_walk).grid(row=0, column=4, padx=8)
+        ttk.Label(walk_frame, text="например: w, w+a, s").grid(row=0, column=5, padx=8)
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -213,10 +242,13 @@ class MacroApp(tk.Tk):
         try:
             x = int(float(self.x_entry.get()))
             y = int(float(self.y_entry.get()))
+            times = max(1, int(self.click_times_entry.get()))
+            interval = max(0.05, float(self.click_interval_entry.get().replace(",", ".")))
         except ValueError:
-            messagebox.showwarning("Macro Bot", "Введите числовые координаты X и Y.")
+            messagebox.showwarning("Macro Bot", "Проверьте координаты, количество повторов и интервал.")
             return
-        self._add_step({"type": "click", "x": x, "y": y, "button": self.button_combo.get()})
+        self._add_step({"type": "click", "x": x, "y": y, "button": self.button_combo.get(),
+                        "times": times, "interval": interval})
 
 
 
@@ -225,7 +257,26 @@ class MacroApp(tk.Tk):
         if not name:
             messagebox.showwarning("Macro Bot", "Укажите название клавиши, например: e, space, f.")
             return
-        self._add_step({"type": "key", "key": name})
+        try:
+            times = max(1, int(self.key_times_entry.get()))
+            hold = max(0.03, float(self.key_hold_entry.get().replace(",", ".")))
+        except ValueError:
+            messagebox.showwarning("Macro Bot", "Проверьте поля «Раз» и «Удерживать».")
+            return
+        self._add_step({"type": "key", "key": name, "times": times, "hold": hold})
+
+    def _add_walk(self):
+        raw = self.walk_keys_entry.get().strip().lower()
+        keys = [k.strip() for k in raw.split("+") if k.strip()]
+        if not keys:
+            messagebox.showwarning("Macro Bot", "Укажите клавиши ходьбы, например: w или w+a.")
+            return
+        try:
+            seconds = max(0.1, float(self.walk_secs_entry.get().replace(",", ".")))
+        except ValueError:
+            messagebox.showwarning("Macro Bot", "Введите число секунд.")
+            return
+        self._add_step({"type": "walk", "keys": keys, "seconds": seconds})
 
     def _add_delay(self):
         try:
@@ -243,9 +294,20 @@ class MacroApp(tk.Tk):
         self.listbox.delete(0, tk.END)
         for i, s in enumerate(self.steps, 1):
             if s["type"] == "click":
-                text = f"{i}. Клик {BUTTON_NAMES[s['button']]} в ({s['x']}, {s['y']})"
+                times = s.get("times", 1)
+                suffix = f" x{times}" if times > 1 else ""
+                text = f"{i}. Клик {BUTTON_NAMES[s['button']]} в ({s['x']}, {s['y']}){suffix}"
             elif s["type"] == "key":
-                text = f"{i}. Нажать: {s['key']}"
+                times = s.get("times", 1)
+                hold = s.get("hold", 0.1)
+                parts = [s["key"]]
+                if times > 1:
+                    parts.append(f"x{times}")
+                if hold > 0.15:
+                    parts.append(f"удерживать {hold} сек")
+                text = f"{i}. Нажать: {' '.join(parts)}"
+            elif s["type"] == "walk":
+                text = f"{i}. Идти: {'+'.join(s['keys'])} ({s['seconds']} сек)"
             else:
                 text = f"{i}. Пауза: {s['seconds']} сек"
             self.listbox.insert(tk.END, text)
@@ -352,14 +414,29 @@ class MacroApp(tk.Tk):
 
     def _apply_step(self, s, speed):
         if s["type"] == "click":
-            mouse.move(s["x"], s["y"])
-            mouse.press(s["button"])
-            time.sleep(KEY_PRESS_PAUSE)
-            mouse.release(s["button"])
+            for _ in range(s.get("times", 1)):
+                if self.stop_event.is_set():
+                    return
+                mouse.move(s["x"], s["y"])
+                mouse.press(s["button"])
+                time.sleep(KEY_PRESS_PAUSE)
+                mouse.release(s["button"])
+                self.stop_event.wait(s.get("interval", 0.3) / speed)
         elif s["type"] == "key":
-            keyboard.press(s["key"])
-            time.sleep(KEY_PRESS_PAUSE)
-            keyboard.release(s["key"])
+            for _ in range(s.get("times", 1)):
+                if self.stop_event.is_set():
+                    return
+                keyboard.press(s["key"])
+                time.sleep(s.get("hold", 0.1) / speed)
+                keyboard.release(s["key"])
+                time.sleep(KEY_PRESS_PAUSE)
+        elif s["type"] == "walk":
+            for k in s["keys"]:
+                keyboard.press(k)
+            if self.stop_event.wait(s["seconds"] / speed):
+                pass
+            for k in reversed(s["keys"]):
+                keyboard.release(k)
         else:
             self.stop_event.wait(s["seconds"] / speed)
 
