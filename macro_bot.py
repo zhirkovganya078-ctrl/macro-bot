@@ -39,6 +39,7 @@ class AhkBot(tk.Tk):
         self.active_cancels = []
         self.enabled = {"wheeldown": True, "wheelup": True, "mbutton": True}
         self.click_xy = (CLICK_X_DEFAULT, CLICK_Y_DEFAULT)
+        self.hook_alive_logged = False
 
         self._build_ui()
 
@@ -102,6 +103,7 @@ class AhkBot(tk.Tk):
                         command=lambda: self.attributes("-topmost",
                                                         bool(self.topmost_var.get()))
                         ).pack(side="left")
+        ttk.Button(bottom, text="Тест всех команд", command=self._test_all).pack(side="left", padx=12)
         ttk.Label(bottom, text="Ins — скрыть окно, F12 — стоп",
                   foreground="#777").pack(side="right")
 
@@ -135,11 +137,15 @@ class AhkBot(tk.Tk):
 
     def _on_mouse(self, e):
         try:
+            if not self.hook_alive_logged:
+                self.hook_alive_logged = True
+                self._log_safe("Хук мыши работает: события приходят")
             if self.running_mbutton and self._is_our_click(e):
                 return
             button = getattr(e, "button", None)
             if button == "middle" and getattr(e, "event_type", None) == "down":
                 if self.enabled["mbutton"] and not self.running_mbutton:
+                    self._log_safe("Триггер: средняя кнопка")
                     threading.Thread(target=self.seq_mbutton, daemon=True).start()
                 return
             delta = getattr(e, "delta", None)
@@ -147,9 +153,11 @@ class AhkBot(tk.Tk):
                 return
             if delta > 0:
                 if self.enabled["wheelup"] and not self.running_wheelup:
+                    self._log_safe("Триггер: колесико вверх")
                     threading.Thread(target=self.seq_wheelup, daemon=True).start()
             else:
                 if self.enabled["wheeldown"] and not self.running_wheeldown:
+                    self._log_safe("Триггер: колесико вниз")
                     threading.Thread(target=self.seq_wheeldown, daemon=True).start()
         except Exception as err:
             self._log_safe(f"Ошибка хука мыши: {err}")
@@ -176,12 +184,28 @@ class AhkBot(tk.Tk):
     def _finish(self, flag_name):
         setattr(self, flag_name, False)
 
+    def _press_left_alt(self):
+        for name in ("left alt", "alt"):
+            try:
+                keyboard.key_to_scan_codes(name)
+                keyboard.press(name)
+                self.stop_event.wait(KEY_PAUSE)
+                keyboard.release(name)
+                return name
+            except (ValueError, KeyError):
+                continue
+        return None
+
     def seq_wheeldown(self):
         self.running_wheeldown = True
         try:
             if self.stop_event.is_set():
                 self.stop_event.clear()
-            self._press("alt")
+            used = self._press_left_alt()
+            if used:
+                self._log_safe("Колесико вниз: нажат ЛЕВЫЙ Alt")
+            else:
+                self._log_safe("Колесико вниз: не смог послать Alt")
             self._log_safe("Колёсико вниз: Alt")
         finally:
             self._finish("running_wheeldown")
@@ -259,6 +283,20 @@ class AhkBot(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+    def _test_all(self):
+        threading.Thread(target=self._test_worker, daemon=True).start()
+
+    def _test_worker(self):
+        self._log_safe("ТЕСТ 1: левый Alt (колесико вниз)...")
+        self.seq_wheeldown()
+        self.stop_event.wait(1.0)
+        self._log_safe("ТЕСТ 2: колесико вверх (клик + ходьба S/W)...")
+        self.seq_wheelup()
+        self.stop_event.wait(1.0)
+        self._log_safe("ТЕСТ 3: средняя кнопка (болты)...")
+        self.seq_mbutton()
+        self._log_safe("ТЕСТ завершён — проверьте игру")
 
     def _log_safe(self, msg):
         self.q.put(("log", msg))
