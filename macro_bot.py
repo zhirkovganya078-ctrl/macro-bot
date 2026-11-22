@@ -230,8 +230,8 @@ class MacroApp(tk.Tk):
         self.p_timeout_entry = ttk.Entry(done_col, width=6)
         self.p_timeout_entry.insert(0, "20")
         self.p_timeout_entry.pack(anchor="w", pady=2)
-        ttk.Button(done_col, text="Добавить шаг\n«до заполнения шкалы»", command=self._add_progress,
-                   wraplength=170).pack(anchor="w", pady=6)
+        ttk.Button(done_col, text="Добавить шаг\n«до заполнения шкалы»",
+                   command=self._add_progress).pack(anchor="w", pady=6)
 
         find_frame = ttk.LabelFrame(self, text="Найти объект на экране по образцу (объекты, которые меняют место)")
         find_frame.pack(fill="x", **pad)
