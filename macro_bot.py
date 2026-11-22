@@ -37,6 +37,8 @@ class AhkBot(tk.Tk):
         self.running_wheelup = False
         self.running_mbutton = False
         self.active_cancels = []
+        self.enabled = {"wheeldown": True, "wheelup": True, "mbutton": True}
+        self.click_xy = (CLICK_X_DEFAULT, CLICK_Y_DEFAULT)
 
         self._build_ui()
 
@@ -51,6 +53,18 @@ class AhkBot(tk.Tk):
             self.after(200, lambda: self._log("Хуки мыши не заработали — запустите от имени администратора"))
         self.after(100, self._poll_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(100, self._sync_state)
+
+    def _sync_state(self):
+        self.enabled["wheeldown"] = bool(self.wheeldown_var.get())
+        self.enabled["wheelup"] = bool(self.wheelup_var.get())
+        self.enabled["mbutton"] = bool(self.mbutton_var.get())
+        try:
+            self.click_xy = (int(float(self.x_entry.get())),
+                             int(float(self.y_entry.get())))
+        except ValueError:
+            pass
+        self.after(100, self._sync_state)
 
     def _build_ui(self):
         frame = ttk.LabelFrame(self, text="Триггеры (включены галочкой)")
@@ -120,22 +134,25 @@ class AhkBot(tk.Tk):
         self.q.put(("log", "F12: остановлено."))
 
     def _on_mouse(self, e):
-        if self.running_mbutton and self._is_our_click(e):
-            return
-        button = getattr(e, "button", None)
-        if button == "middle" and getattr(e, "event_type", None) == "down":
-            if self.mbutton_var.get() and not self.running_mbutton:
-                threading.Thread(target=self.seq_mbutton, daemon=True).start()
-            return
-        delta = getattr(e, "delta", None)
-        if not delta:
-            return
-        if delta > 0:
-            if self.wheelup_var.get() and not self.running_wheelup:
-                threading.Thread(target=self.seq_wheelup, daemon=True).start()
-        else:
-            if self.wheeldown_var.get() and not self.running_wheeldown:
-                threading.Thread(target=self.seq_wheeldown, daemon=True).start()
+        try:
+            if self.running_mbutton and self._is_our_click(e):
+                return
+            button = getattr(e, "button", None)
+            if button == "middle" and getattr(e, "event_type", None) == "down":
+                if self.enabled["mbutton"] and not self.running_mbutton:
+                    threading.Thread(target=self.seq_mbutton, daemon=True).start()
+                return
+            delta = getattr(e, "delta", None)
+            if not delta:
+                return
+            if delta > 0:
+                if self.enabled["wheelup"] and not self.running_wheelup:
+                    threading.Thread(target=self.seq_wheelup, daemon=True).start()
+            else:
+                if self.enabled["wheeldown"] and not self.running_wheeldown:
+                    threading.Thread(target=self.seq_wheeldown, daemon=True).start()
+        except Exception as err:
+            self._log_safe(f"Ошибка хука мыши: {err}")
 
     def _is_our_click(self, e):
         return getattr(e, "event_type", None) in ("down", "up")
@@ -154,10 +171,7 @@ class AhkBot(tk.Tk):
         mouse.release(button)
 
     def _point(self):
-        try:
-            return int(float(self.x_entry.get())), int(float(self.y_entry.get()))
-        except ValueError:
-            return CLICK_X_DEFAULT, CLICK_Y_DEFAULT
+        return self.click_xy
 
     def _finish(self, flag_name):
         setattr(self, flag_name, False)
