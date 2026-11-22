@@ -206,9 +206,14 @@ class MacroApp(tk.Tk):
         ttk.Label(find_frame, text="Действие:").grid(row=0, column=4, padx=6)
         self.find_action_combo = ttk.Combobox(find_frame, width=14, state="readonly",
                                               values=["Кликнуть N раз", "Удерживать",
-                                                      "Ждать появления"])
+                                                      "Ждать появления",
+                                                      "Ждать и нажать клавишу"])
         self.find_action_combo.current(0)
         self.find_action_combo.grid(row=0, column=5, padx=2)
+        ttk.Label(find_frame, text="Клавиша после события:").grid(row=1, column=4, padx=6, pady=4)
+        self.find_key_entry = ttk.Entry(find_frame, width=8)
+        self.find_key_entry.insert(0, "space")
+        self.find_key_entry.grid(row=1, column=5, padx=2, sticky="w")
         ttk.Label(find_frame, text="Раз:").grid(row=0, column=6, padx=6)
         self.find_times_entry = ttk.Entry(find_frame, width=5)
         self.find_times_entry.insert(0, "1")
@@ -540,14 +545,22 @@ class MacroApp(tk.Tk):
             messagebox.showwarning("Macro Bot", "Проверьте поля «Раз» и «Сек».")
             return
         combo_choice = self.find_action_combo.get()
-        action = "hold" if combo_choice == "Удерживать" else (
-            "wait" if combo_choice == "Ждать появления" else "clicks")
+        action = {"Удерживать": "hold", "Ждать появления": "wait",
+                  "Ждать и нажать клавишу": "wait_key"}.get(combo_choice, "clicks")
+        if action == "wait_key":
+            key = self.find_key_entry.get().strip().lower()
+            if not key:
+                messagebox.showwarning("Macro Bot", "Укажите клавишу после события, например: space.")
+                return
+        else:
+            key = ""
         self._add_step({"type": "find", "template": name, "action": action,
                         "button": self.button_combo.get(),
                         "times": times if action == "clicks" else 1,
                         "interval": param if action == "clicks" else 0.3,
                         "hold": param if action == "hold" else 0,
-                        "timeout": param if action == "wait" else 15,
+                        "key": key,
+                        "timeout": param if action in ("wait", "wait_key") else 15,
                         "confidence": 0.8})
 
     def _add_delay(self):
@@ -588,6 +601,8 @@ class MacroApp(tk.Tk):
                     detail = f"удерживать {s['hold']} сек"
                 elif s["action"] == "wait":
                     detail = f"ждать до {s.get('timeout', 15)} сек"
+                elif s["action"] == "wait_key":
+                    detail = f"ждать до {s.get('timeout', 15)} сек и нажать {s.get('key', 'space')}"
                 else:
                     detail = f"{BUTTON_NAMES[s['button']]} x{s.get('times', 1)}"
                 text = f"{i}. Найти «{s['template']}», {detail}"
@@ -752,6 +767,12 @@ class MacroApp(tk.Tk):
             if pos is None:
                 return
             if s["action"] == "wait":
+                return
+            if s["action"] == "wait_key":
+                keyboard.press(s["key"])
+                time.sleep(KEY_PRESS_PAUSE)
+                keyboard.release(s["key"])
+                self.q.put(("log", f"Событие появилось — нажата клавиша {s['key']}"))
                 return
             x, y = pos
             if s["action"] == "hold":
