@@ -1,5 +1,3 @@
 __pycache__/
 *.pyc
 macro.json
-vision_config.json
-reference.png
