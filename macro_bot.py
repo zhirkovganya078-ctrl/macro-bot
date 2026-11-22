@@ -72,13 +72,15 @@ class MacroApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Macro Bot")
-        self.geometry("560x700")
-        self.minsize(500, 500)
+        self.geometry("540x600")
+        self.minsize(460, 420)
 
         self.steps = []
         self.stop_event = threading.Event()
         self.playing = False
+        self.autopilot = False
         self.recording = False
+        self.hidden = False
         self.recording_last_t = 0.0
         self.capture_active = False
         self.capture_key_active = False
@@ -94,6 +96,7 @@ class MacroApp(tk.Tk):
 
         keyboard.add_hotkey("f12", lambda: self.q.put(("stop", None)))
         keyboard.add_hotkey("f8", lambda: self.q.put(("record_toggle", None)))
+        keyboard.add_hotkey("insert", lambda: self.q.put(("hide_toggle", None)))
         self.after(100, self._poll_queue)
         self.after(100, self._update_cursor_label)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -359,6 +362,16 @@ class MacroApp(tk.Tk):
         self.status = ttk.Label(content, text="Готов.", foreground="#555")
         self.status.pack(anchor="w", **pad)
 
+    def _toggle_hidden(self):
+        self.hidden = not self.hidden
+        if self.hidden:
+            self.withdraw()
+        else:
+            self.deiconify()
+        state = "скрыто" if self.hidden else "показано"
+        self.status.config(text=f"Окно {state}. Ins — показать/скрыть.")
+        self._log(f"Окно {state} (Ins — переключить). Автопилот и сценарий не остановлены.")
+
     def _apply_topmost(self):
         self.attributes("-topmost", bool(self.topmost_var.get()))
 
@@ -368,6 +381,8 @@ class MacroApp(tk.Tk):
                 kind, data = self.q.get_nowait()
                 if kind == "log":
                     self._log(data)
+                elif kind == "hide_toggle":
+                    self._toggle_hidden()
                 elif kind == "coords":
                     for entry in (self.x_entry, self.hold_x_entry, self.px_entry, self.py_entry):
                         entry.delete(0, tk.END)
@@ -412,7 +427,7 @@ class MacroApp(tk.Tk):
         self._log("Кликните в нужном месте — координаты подставятся...")
 
     def _capture_click(self, e):
-        if not self.capture_active or e.event_type != "down":
+        if not self.capture_active or getattr(e, "event_type", None) != "down":
             return
         self.capture_active = False
         try:
@@ -491,7 +506,7 @@ class MacroApp(tk.Tk):
         self._log("Кликните в ТОЧКУ шкалы, которая красится при заполнении...")
 
     def _capture_bar(self, e):
-        if not self.capture_bar_active or e.event_type != "down":
+        if not self.capture_bar_active or getattr(e, "event_type", None) != "down":
             return
         self.capture_bar_active = False
         try:
@@ -931,9 +946,7 @@ class MacroApp(tk.Tk):
             pass
 
     def _record_mouse(self, e):
-        if not self.recording:
-            return
-        if isinstance(e, mouse.WheelEvent):
+        if not self.recording or getattr(e, "event_type", None) != "down":
             return
         if e.event_type == "down" and e.button in BUTTON_NAMES:
             self._record_flush({"type": "click", "x": e.x, "y": e.y, "button": e.button})
