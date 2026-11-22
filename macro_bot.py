@@ -18,6 +18,7 @@ from tkinter import messagebox, ttk
 
 import keyboard
 import mouse
+from PIL import ImageGrab
 
 MACRO_FILE = Path(__file__).with_name("macro.json")
 KEY_PRESS_PAUSE = 0.03
@@ -42,6 +43,7 @@ class MacroApp(tk.Tk):
         self.recording_last_t = 0.0
         self.capture_active = False
         self.capture_key_active = False
+        self.capture_bar_active = False
 
         self.q = queue.Queue()
         self._build_ui()
@@ -116,6 +118,79 @@ class MacroApp(tk.Tk):
         ttk.Button(walk_frame, text="Добавить ходьбу", command=self._add_walk).grid(row=0, column=4, padx=8)
         ttk.Label(walk_frame, text="например: w, w+a, s").grid(row=0, column=5, padx=8)
 
+        hold_frame = ttk.LabelFrame(self, text="Удержание кнопки мыши (например, ПКМ — откручивать болты)")
+        hold_frame.pack(fill="x", **pad)
+        ttk.Label(hold_frame, text="X:").grid(row=0, column=0, padx=6, pady=6)
+        self.hold_x_entry = ttk.Entry(hold_frame, width=8)
+        self.hold_x_entry.grid(row=0, column=1, padx=2)
+        ttk.Label(hold_frame, text="Y:").grid(row=0, column=2, padx=6)
+        self.hold_y_entry = ttk.Entry(hold_frame, width=8)
+        self.hold_y_entry.grid(row=0, column=3, padx=2)
+        ttk.Label(hold_frame, text="Кнопка:").grid(row=0, column=4, padx=6)
+        self.hold_button_combo = ttk.Combobox(hold_frame, width=8, state="readonly",
+                                              values=list(BUTTON_NAMES))
+        self.hold_button_combo.current(1)
+        self.hold_button_combo.grid(row=0, column=5, padx=2)
+        ttk.Label(hold_frame, text="Секунд:").grid(row=0, column=6, padx=6)
+        self.hold_secs_entry = ttk.Entry(hold_frame, width=6)
+        self.hold_secs_entry.insert(0, "3.0")
+        self.hold_secs_entry.grid(row=0, column=7, padx=2)
+        ttk.Button(hold_frame, text="Добавить удержание", command=self._add_hold_button).grid(row=0, column=8, padx=8)
+
+        progress_frame = ttk.LabelFrame(self, text="Действие до заполнения шкалы (по цвету шкалы)")
+        progress_frame.columnconfigure(0, weight=1)
+        progress_frame.columnconfigure(1, weight=1)
+        progress_frame.columnconfigure(2, weight=1)
+        progress_frame.pack(fill="x", **pad)
+        click_col = ttk.Frame(progress_frame)
+        click_col.grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(click_col, text="Где нажимать").pack(anchor="w")
+        cx_row = ttk.Frame(click_col)
+        cx_row.pack(anchor="w", pady=2)
+        ttk.Label(cx_row, text="X:").pack(side="left")
+        self.px_entry = ttk.Entry(cx_row, width=6)
+        self.px_entry.pack(side="left", padx=2)
+        ttk.Label(cx_row, text="Y:").pack(side="left", padx=(6, 0))
+        self.py_entry = ttk.Entry(cx_row, width=6)
+        self.py_entry.pack(side="left", padx=2)
+        ttk.Label(click_col, text="Кнопка:").pack(anchor="w")
+        self.p_button_combo = ttk.Combobox(click_col, width=8, state="readonly", values=list(BUTTON_NAMES))
+        self.p_button_combo.current(0)
+        self.p_button_combo.pack(anchor="w", pady=2)
+        ttk.Label(click_col, text="Режим:").pack(anchor="w")
+        self.p_mode_combo = ttk.Combobox(click_col, width=10, state="readonly", values=["Зажать", "Клики"])
+        self.p_mode_combo.current(0)
+        self.p_mode_combo.pack(anchor="w", pady=2)
+        ttk.Label(click_col, text="Интервал кликов, сек:").pack(anchor="w")
+        self.p_interval_entry = ttk.Entry(click_col, width=6)
+        self.p_interval_entry.insert(0, "0.25")
+        self.p_interval_entry.pack(anchor="w", pady=2)
+
+        bar_col = ttk.Frame(progress_frame)
+        bar_col.grid(row=0, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(bar_col, text="Точка шкалы (верхнутая часть,\nкоторая красится при заполнении)").pack(anchor="w")
+        bx_row = ttk.Frame(bar_col)
+        bx_row.pack(anchor="w", pady=2)
+        ttk.Label(bx_row, text="X:").pack(side="left")
+        self.bar_x_entry = ttk.Entry(bx_row, width=6)
+        self.bar_x_entry.pack(side="left", padx=2)
+        ttk.Label(bx_row, text="Y:").pack(side="left", padx=(6, 0))
+        self.bar_y_entry = ttk.Entry(bx_row, width=6)
+        self.bar_y_entry.pack(side="left", padx=2)
+        self.bar_color_label = ttk.Label(bar_col, text="Цвет: неизвестен", font=("Consolas", 9))
+        self.bar_color_label.pack(anchor="w", pady=2)
+        ttk.Button(bar_col, text="Снять цвет шкалы по клику",
+                   command=self._arm_bar_capture).pack(anchor="w", pady=(4, 0))
+
+        done_col = ttk.Frame(progress_frame)
+        done_col.grid(row=0, column=2, sticky="nw", padx=8, pady=4)
+        ttk.Label(done_col, text="Макс. секунд (страховка):").pack(anchor="w")
+        self.p_timeout_entry = ttk.Entry(done_col, width=6)
+        self.p_timeout_entry.insert(0, "20")
+        self.p_timeout_entry.pack(anchor="w", pady=2)
+        ttk.Button(done_col, text="Добавить шаг\n«до заполнения шкалы»", command=self._add_progress,
+                   wraplength=170).pack(anchor="w", pady=6)
+
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
         ttk.Label(delay_frame, text="Секунды:").grid(row=0, column=0, padx=6, pady=6)
@@ -172,12 +247,20 @@ class MacroApp(tk.Tk):
                 if kind == "log":
                     self._log(data)
                 elif kind == "coords":
-                    self.x_entry.delete(0, tk.END)
-                    self.x_entry.insert(0, str(data[0]))
-                    self.y_entry.delete(0, tk.END)
-                    self.y_entry.insert(0, str(data[1]))
+                    for entry in (self.x_entry, self.hold_x_entry, self.px_entry, self.py_entry):
+                        entry.delete(0, tk.END)
+                        entry.insert(0, str(data))
                     self.capture_active = False
                     self._log(f"Координаты заданы по клику: ({data[0]}, {data[1]})")
+                elif kind == "bar_point":
+                    self.capture_bar_active = False
+                    x, y, color = data
+                    self.bar_x_entry.delete(0, tk.END)
+                    self.bar_x_entry.insert(0, str(x))
+                    self.bar_y_entry.delete(0, tk.END)
+                    self.bar_y_entry.insert(0, str(y))
+                    self.bar_color_label.config(text=f"Цвет: {color}")
+                    self._log(f"Точка шкалы: ({x}, {y}), цвет RGB{color}")
                 elif kind == "key_captured":
                     self.capture_key_active = False
                     if data:
@@ -278,6 +361,63 @@ class MacroApp(tk.Tk):
             return
         self._add_step({"type": "walk", "keys": keys, "seconds": seconds})
 
+    def _arm_bar_capture(self):
+        if self.capture_bar_active:
+            return
+        self.capture_bar_active = True
+        mouse.hook(self._capture_bar)
+        self._log("Кликните в ТОЧКУ шкалы, которая красится при заполнении...")
+
+    def _capture_bar(self, e):
+        if not self.capture_bar_active or e.event_type != "down":
+            return
+        self.capture_bar_active = False
+        try:
+            mouse.unhook(self._capture_bar)
+        except ValueError:
+            pass
+        color = ImageGrab.grab(bbox=(e.x, e.y, e.x + 1, e.y + 1)).getpixel((0, 0))
+        self.q.put(("bar_point", (e.x, e.y, tuple(color[:3]))))
+
+    def _add_hold_button(self):
+        try:
+            x = int(float(self.hold_x_entry.get()))
+            y = int(float(self.hold_y_entry.get()))
+            seconds = max(0.1, float(self.hold_secs_entry.get().replace(",", ".")))
+        except ValueError:
+            messagebox.showwarning("Macro Bot", "Проверьте координаты и секунды удержания.")
+            return
+        self._add_step({"type": "hold_button", "x": x, "y": y,
+                        "button": self.hold_button_combo.get(), "seconds": seconds})
+
+    def _add_progress(self):
+        try:
+            cx = int(float(self.px_entry.get()))
+            cy = int(float(self.py_entry.get()))
+            bx = int(float(self.bar_x_entry.get()))
+            by = int(float(self.bar_y_entry.get()))
+            interval = max(0.05, float(self.p_interval_entry.get().replace(",", ".")))
+            timeout = max(3, float(self.p_timeout_entry.get().replace(",", ".")))
+        except ValueError:
+            messagebox.showwarning("Macro Bot",
+                                   "Задайте координаты нажатия и точку шкалы (по клику).")
+            return
+        color_text = self.bar_color_label.cget("text")
+        if color_text == "Цвет: неизвестен":
+            messagebox.showwarning("Macro Bot", "Сначала снимите цвет шкалы кнопкой «Снять цвет шкалы по клику».")
+            return
+        color = tuple(int(c) for c in color_text.replace("Цвет:", "").strip(" ()").split(","))
+        mode = "hold" if self.p_mode_combo.get() == "Зажать" else "clicks"
+        self._add_step({"type": "progress", "x": cx, "y": cy,
+                        "button": self.p_button_combo.get(), "mode": mode,
+                        "interval": interval, "timeout": timeout,
+                        "bar": [bx, by], "empty_color": list(color)})
+
+    def _is_bar_filled(self, bar_point, empty_color):
+        r, g, b = ImageGrab.grab(bbox=(bar_point[0], bar_point[1],
+                                       bar_point[0] + 1, bar_point[1] + 1)).getpixel((0, 0))[:3]
+        return abs(r - empty_color[0]) + abs(g - empty_color[1]) + abs(b - empty_color[2]) > 60
+
     def _add_delay(self):
         try:
             seconds = max(0.05, float(self.delay_entry.get().replace(",", ".")))
@@ -308,6 +448,13 @@ class MacroApp(tk.Tk):
                 text = f"{i}. Нажать: {' '.join(parts)}"
             elif s["type"] == "walk":
                 text = f"{i}. Идти: {'+'.join(s['keys'])} ({s['seconds']} сек)"
+            elif s["type"] == "hold_button":
+                text = (f"{i}. Удерживать {BUTTON_NAMES[s['button']]} в "
+                        f"({s['x']}, {s['y']}) {s['seconds']} сек")
+            elif s["type"] == "progress":
+                mode = "зажать" if s.get("mode", "hold") == "hold" else "кликать"
+                text = (f"{i}. {mode.capitalize()} {BUTTON_NAMES[s['button']]} до заполнения "
+                        f"шкалы ({tuple(s['empty_color'])}→стало иным, макс {s.get('timeout', 20)} сек)")
             else:
                 text = f"{i}. Пауза: {s['seconds']} сек"
             self.listbox.insert(tk.END, text)
@@ -430,6 +577,32 @@ class MacroApp(tk.Tk):
                 time.sleep(s.get("hold", 0.1) / speed)
                 keyboard.release(s["key"])
                 time.sleep(KEY_PRESS_PAUSE)
+        elif s["type"] == "hold_button":
+            mouse.move(s["x"], s["y"])
+            mouse.press(s["button"])
+            self.stop_event.wait(s["seconds"] / speed)
+            mouse.release(s["button"])
+        elif s["type"] == "progress":
+            started = time.perf_counter()
+            mode_hold = s.get("mode", "hold") == "hold"
+            if mode_hold:
+                mouse.move(s["x"], s["y"])
+                mouse.press(s["button"])
+            while not self.stop_event.is_set():
+                if (time.perf_counter() - started) > s.get("timeout", 20):
+                    self.q.put(("log", "Шкала не заполнилась — сработал таймер страховки."))
+                    break
+                if self._is_bar_filled(s["bar"], s["empty_color"]):
+                    self.q.put(("log", "Шкала заполнена."))
+                    break
+                if not mode_hold:
+                    mouse.move(s["x"], s["y"])
+                    mouse.press(s["button"])
+                    time.sleep(KEY_PRESS_PAUSE)
+                    mouse.release(s["button"])
+                self.stop_event.wait(s.get("interval", 0.25) / speed)
+            if mode_hold:
+                mouse.release(s["button"])
         elif s["type"] == "walk":
             for k in s["keys"]:
                 keyboard.press(k)
