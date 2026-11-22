@@ -72,8 +72,8 @@ class MacroApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Macro Bot")
-        self.geometry("520x560")
-        self.minsize(460, 480)
+        self.geometry("560x700")
+        self.minsize(500, 500)
 
         self.steps = []
         self.stop_event = threading.Event()
@@ -100,14 +100,32 @@ class MacroApp(tk.Tk):
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
 
-        cursor_frame = ttk.LabelFrame(self, text="Текущие координаты курсора")
+        canvas = tk.Canvas(self, highlightthickness=0)
+        scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        content = ttk.Frame(canvas)
+        content_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>",
+                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(content_id, width=e.width))
+
+        def _on_wheel(e):
+            if canvas.yview()[1] - canvas.yview()[0] < 1:
+                canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+
+        canvas.bind_all("<MouseWheel>", _on_wheel)
+
+        cursor_frame = ttk.LabelFrame(content, text="Текущие координаты курсора")
         cursor_frame.pack(fill="x", **pad)
         self.cursor_label = ttk.Label(cursor_frame, text="X: ---  Y: ---", font=("Consolas", 11))
         self.cursor_label.pack(anchor="w", padx=8, pady=4)
         ttk.Button(cursor_frame, text="Задать координаты по клику мыши",
                    command=self._arm_click_capture).pack(anchor="w", padx=8, pady=(0, 6))
 
-        click_frame = ttk.LabelFrame(self, text="Клик по координатам")
+        click_frame = ttk.LabelFrame(content, text="Клик по координатам")
         click_frame.pack(fill="x", **pad)
         ttk.Label(click_frame, text="X:").grid(row=0, column=0, padx=6, pady=6)
         self.x_entry = ttk.Entry(click_frame, width=8)
@@ -130,7 +148,7 @@ class MacroApp(tk.Tk):
         self.click_interval_entry.grid(row=0, column=9, padx=2)
         ttk.Button(click_frame, text="Добавить клик", command=self._add_click).grid(row=0, column=10, padx=8)
 
-        key_frame = ttk.LabelFrame(self, text="Нажатие клавиши")
+        key_frame = ttk.LabelFrame(content, text="Нажатие клавиши")
         key_frame.pack(fill="x", **pad)
         ttk.Label(key_frame, text="Клавиша:").grid(row=0, column=0, padx=6, pady=6)
         self.key_entry = ttk.Entry(key_frame, width=12)
@@ -147,7 +165,7 @@ class MacroApp(tk.Tk):
         self.key_hold_entry.grid(row=0, column=7, padx=2)
         ttk.Button(key_frame, text="Добавить клавишу", command=self._add_key).grid(row=0, column=8, padx=8)
 
-        walk_frame = ttk.LabelFrame(self, text="Ходьба (зажать клавиши на время)")
+        walk_frame = ttk.LabelFrame(content, text="Ходьба (зажать клавиши на время)")
         walk_frame.pack(fill="x", **pad)
         ttk.Label(walk_frame, text="Клавиши (через +):", ).grid(row=0, column=0, padx=6, pady=6)
         self.walk_keys_entry = ttk.Entry(walk_frame, width=10)
@@ -160,7 +178,7 @@ class MacroApp(tk.Tk):
         ttk.Button(walk_frame, text="Добавить ходьбу", command=self._add_walk).grid(row=0, column=4, padx=8)
         ttk.Label(walk_frame, text="например: w, w+a, s").grid(row=0, column=5, padx=8)
 
-        hold_frame = ttk.LabelFrame(self, text="Удержание кнопки мыши (например, ПКМ — откручивать болты)")
+        hold_frame = ttk.LabelFrame(content, text="Удержание кнопки мыши (например, ПКМ — откручивать болты)")
         hold_frame.pack(fill="x", **pad)
         ttk.Label(hold_frame, text="X:").grid(row=0, column=0, padx=6, pady=6)
         self.hold_x_entry = ttk.Entry(hold_frame, width=8)
@@ -179,7 +197,7 @@ class MacroApp(tk.Tk):
         self.hold_secs_entry.grid(row=0, column=7, padx=2)
         ttk.Button(hold_frame, text="Добавить удержание", command=self._add_hold_button).grid(row=0, column=8, padx=8)
 
-        progress_frame = ttk.LabelFrame(self, text="Действие до заполнения шкалы (по цвету шкалы)")
+        progress_frame = ttk.LabelFrame(content, text="Действие до заполнения шкалы (по цвету шкалы)")
         progress_frame.columnconfigure(0, weight=1)
         progress_frame.columnconfigure(1, weight=1)
         progress_frame.columnconfigure(2, weight=1)
@@ -233,7 +251,7 @@ class MacroApp(tk.Tk):
         ttk.Button(done_col, text="Добавить шаг\n«до заполнения шкалы»",
                    command=self._add_progress).pack(anchor="w", pady=6)
 
-        find_frame = ttk.LabelFrame(self, text="Найти объект на экране по образцу (объекты, которые меняют место)")
+        find_frame = ttk.LabelFrame(content, text="Найти объект на экране по образцу (объекты, которые меняют место)")
         find_frame.pack(fill="x", **pad)
         ttk.Label(find_frame, text="Образец:").grid(row=0, column=0, padx=6, pady=6)
         self.tpl_combo = ttk.Combobox(find_frame, width=14, state="readonly")
@@ -263,7 +281,7 @@ class MacroApp(tk.Tk):
                    command=self._add_find).grid(row=0, column=10, padx=8)
         self._refresh_templates()
 
-        ai_frame = ttk.LabelFrame(self, text="ИИ-автопилот: бот читает экран и сам жмёт нужное")
+        ai_frame = ttk.LabelFrame(content, text="ИИ-автопилот: бот читает экран и сам жмёт нужное")
         ai_frame.pack(fill="x", **pad)
         ttk.Label(ai_frame, text="API-ключ Mistral:").grid(row=0, column=0, padx=6, pady=6)
         self.ai_key_entry = ttk.Entry(ai_frame, width=34, show="*")
@@ -286,7 +304,7 @@ class MacroApp(tk.Tk):
                                         command=self._toggle_autopilot)
         self.autopilot_btn.grid(row=2, column=2, columnspan=2, padx=8, sticky="w")
 
-        delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
+        delay_frame = ttk.LabelFrame(content, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
         ttk.Label(delay_frame, text="Секунды:").grid(row=0, column=0, padx=6, pady=6)
         self.delay_entry = ttk.Entry(delay_frame, width=8)
@@ -294,7 +312,7 @@ class MacroApp(tk.Tk):
         self.delay_entry.grid(row=0, column=1, padx=2)
         ttk.Button(delay_frame, text="Добавить паузу", command=self._add_delay).grid(row=0, column=2, padx=8)
 
-        list_frame = ttk.LabelFrame(self, text="Сценарий (порядок сверху вниз)")
+        list_frame = ttk.LabelFrame(content, text="Сценарий (порядок сверху вниз)")
         list_frame.pack(fill="both", expand=True, **pad)
         self.listbox = tk.Listbox(list_frame, height=10, activestyle="dotbox")
         self.listbox.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=6)
@@ -310,7 +328,7 @@ class MacroApp(tk.Tk):
         ttk.Button(btn_col, text="Удалить", width=10, command=self._delete_step).pack(pady=2)
         ttk.Button(btn_col, text="Очистить всё", width=10, command=self._clear_all).pack(pady=2)
 
-        play_frame = ttk.LabelFrame(self, text="Запуск")
+        play_frame = ttk.LabelFrame(content, text="Запуск")
         play_frame.pack(fill="x", **pad)
         ttk.Label(play_frame, text="Повторов:").grid(row=0, column=0, padx=6, pady=6)
         self.repeats_spin = ttk.Spinbox(play_frame, from_=1, to=999999, width=8)
@@ -327,12 +345,12 @@ class MacroApp(tk.Tk):
         self.rec_btn = ttk.Button(play_frame, text="● Запись", command=self._toggle_record)
         self.rec_btn.grid(row=0, column=6, padx=8)
 
-        save_frame = ttk.Frame(self)
+        save_frame = ttk.Frame(content)
         save_frame.pack(fill="x", **pad)
         ttk.Button(save_frame, text="Сохранить в файл", command=self._save).pack(side="left", padx=2)
         ttk.Button(save_frame, text="Загрузить из файла", command=self._load).pack(side="left", padx=2)
 
-        self.status = ttk.Label(self, text="Готов.", foreground="#555")
+        self.status = ttk.Label(content, text="Готов.", foreground="#555")
         self.status.pack(anchor="w", **pad)
 
     def _poll_queue(self):
