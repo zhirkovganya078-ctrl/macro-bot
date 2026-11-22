@@ -16,11 +16,14 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+import cv2
 import keyboard
 import mouse
-from PIL import ImageGrab
+import numpy as np
+from PIL import Image, ImageGrab
 
 MACRO_FILE = Path(__file__).with_name("macro.json")
+TEMPLATE_DIR = Path(__file__).with_name("templates")
 KEY_PRESS_PAUSE = 0.03
 
 BUTTON_NAMES = {"left": "ЛКМ", "right": "ПКМ", "middle": "СКМ"}
@@ -44,6 +47,8 @@ class MacroApp(tk.Tk):
         self.capture_active = False
         self.capture_key_active = False
         self.capture_bar_active = False
+        self.record_pressed = {}
+        TEMPLATE_DIR.mkdir(exist_ok=True)
 
         self.q = queue.Queue()
         self._build_ui()
@@ -190,6 +195,31 @@ class MacroApp(tk.Tk):
         self.p_timeout_entry.pack(anchor="w", pady=2)
         ttk.Button(done_col, text="Добавить шаг\n«до заполнения шкалы»", command=self._add_progress,
                    wraplength=170).pack(anchor="w", pady=6)
+
+        find_frame = ttk.LabelFrame(self, text="Найти объект на экране по образцу (объекты, которые меняют место)")
+        find_frame.pack(fill="x", **pad)
+        ttk.Label(find_frame, text="Образец:").grid(row=0, column=0, padx=6, pady=6)
+        self.tpl_combo = ttk.Combobox(find_frame, width=14, state="readonly")
+        self.tpl_combo.grid(row=0, column=1, padx=2)
+        ttk.Button(find_frame, text="Обновить", command=self._refresh_templates).grid(row=0, column=2, padx=4)
+        ttk.Button(find_frame, text="Снять рамкой", command=self._capture_template).grid(row=0, column=3, padx=4)
+        ttk.Label(find_frame, text="Действие:").grid(row=0, column=4, padx=6)
+        self.find_action_combo = ttk.Combobox(find_frame, width=14, state="readonly",
+                                              values=["Кликнуть N раз", "Удерживать",
+                                                      "Ждать появления"])
+        self.find_action_combo.current(0)
+        self.find_action_combo.grid(row=0, column=5, padx=2)
+        ttk.Label(find_frame, text="Раз:").grid(row=0, column=6, padx=6)
+        self.find_times_entry = ttk.Entry(find_frame, width=5)
+        self.find_times_entry.insert(0, "1")
+        self.find_times_entry.grid(row=0, column=7, padx=2)
+        ttk.Label(find_frame, text="Сек (интервал кликов / удержание):").grid(row=0, column=8, padx=6)
+        self.find_param_entry = ttk.Entry(find_frame, width=6)
+        self.find_param_entry.insert(0, "0.4")
+        self.find_param_entry.grid(row=0, column=9, padx=2)
+        ttk.Button(find_frame, text="Добавить «найти и нажать»",
+                   command=self._add_find).grid(row=0, column=10, padx=8)
+        self._refresh_templates()
 
         delay_frame = ttk.LabelFrame(self, text="Пауза между действиями")
         delay_frame.pack(fill="x", **pad)
@@ -418,6 +448,108 @@ class MacroApp(tk.Tk):
                                        bar_point[0] + 1, bar_point[1] + 1)).getpixel((0, 0))[:3]
         return abs(r - empty_color[0]) + abs(g - empty_color[1]) + abs(b - empty_color[2]) > 60
 
+    def _refresh_templates(self):
+        names = sorted(p.name for p in TEMPLATE_DIR.glob("*.png"))
+        self.tpl_combo["values"] = names
+        if names and self.tpl_combo.get() not in names:
+            self.tpl_combo.current(0)
+
+    def _capture_template(self):
+        if self.capturing:
+            return
+        self.capturing = True
+        for i in range(3, 0, -1):
+            self.after((3 - i) * 1000,
+                       lambda n=i: self.status.config(text=f"Откройте окно с объектом... {n}"))
+        self.after(3000, self._open_template_overlay)
+
+    def _open_template_overlay(self):
+        self.template_overlay = tk.Toplevel(self)
+        self.template_overlay.overrideredirect(True)
+        self.template_overlay.geometry(
+            f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}+0+0")
+        self.template_overlay.attributes("-alpha", 0.3)
+        self.template_overlay.attributes("-topmost", True)
+        canvas = tk.Canvas(self.template_overlay, cursor="crosshair", bg="black")
+        canvas.pack(fill="both", expand=True)
+        canvas.bind("<ButtonPress-1>", self._tpl_start)
+        canvas.bind("<B1-Motion>", self._tpl_move)
+        canvas.bind("<ButtonRelease-1>", self._tpl_done)
+        self.template_overlay.bind("<Escape>", lambda e: self._tpl_cancel())
+        self._tpl_canvas = canvas
+        self._tpl_start_pos = None
+        self._log("Обведите объект рамкой (Esc — отмена)")
+
+    def _tpl_start(self, e):
+        self._tpl_start_pos = (e.x_root, e.y_root)
+
+    def _tpl_move(self, e):
+        if not self._tpl_start_pos:
+            return
+        ox = self.template_overlay.winfo_rootx()
+        oy = self.template_overlay.winfo_rooty()
+        self._tpl_canvas.delete("all")
+        self._tpl_canvas.create_rectangle(
+            self._tpl_start_pos[0] - ox, self._tpl_start_pos[1] - oy,
+            e.x_root - ox, e.y_root - oy, outline="red", width=2)
+
+    def _tpl_done(self, e):
+        if not self._tpl_start_pos:
+            return
+        x1, y1 = min(self._tpl_start_pos[0], e.x_root), min(self._tpl_start_pos[1], e.y_root)
+        x2, y2 = max(self._tpl_start_pos[0], e.x_root), max(self._tpl_start_pos[1], e.y_root)
+        self.template_overlay.destroy()
+        self.capturing = False
+        if x2 - x1 < 5 or y2 - y1 < 5:
+            self._log("Область слишком мала — образец не сохранён.")
+            return
+        n = len(list(TEMPLATE_DIR.glob("*.png"))) + 1
+        path = TEMPLATE_DIR / f"template_{n}.png"
+        ImageGrab.grab(bbox=(x1, y1, x2, y2)).save(path)
+        self._refresh_templates()
+        self.tpl_combo.set(path.name)
+        self._log(f"Образец сохранён: {path.name} ({x2 - x1}x{y2 - y1})")
+
+    def _tpl_cancel(self):
+        self.template_overlay.destroy()
+        self.capturing = False
+        self._log("Отменено.")
+
+    def _find_template(self, name, threshold):
+        tpl = cv2.imread(str(TEMPLATE_DIR / name), cv2.IMREAD_COLOR)
+        if tpl is None:
+            return None
+        screen = cv2.cvtColor(np.asarray(ImageGrab.grab().convert("RGB")),
+                              cv2.COLOR_RGB2BGR)
+        res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val < threshold:
+            return None
+        h, w = tpl.shape[:2]
+        return max_loc[0] + w // 2, max_loc[1] + h // 2
+
+    def _add_find(self):
+        name = self.tpl_combo.get()
+        if not name:
+            messagebox.showwarning("Macro Bot", "Сначала снимите образец рамкой.")
+            return
+        try:
+            times = max(1, int(self.find_times_entry.get()))
+            param = max(0.05, float(self.find_param_entry.get().replace(",", ".")))
+        except ValueError:
+            messagebox.showwarning("Macro Bot", "Проверьте поля «Раз» и «Сек».")
+            return
+        combo_choice = self.find_action_combo.get()
+        action = "hold" if combo_choice == "Удерживать" else (
+            "wait" if combo_choice == "Ждать появления" else "clicks")
+        self._add_step({"type": "find", "template": name, "action": action,
+                        "button": self.button_combo.get(),
+                        "times": times if action == "clicks" else 1,
+                        "interval": param if action == "clicks" else 0.3,
+                        "hold": param if action == "hold" else 0,
+                        "timeout": param if action == "wait" else 15,
+                        "confidence": 0.8})
+
     def _add_delay(self):
         try:
             seconds = max(0.05, float(self.delay_entry.get().replace(",", ".")))
@@ -451,6 +583,14 @@ class MacroApp(tk.Tk):
             elif s["type"] == "hold_button":
                 text = (f"{i}. Удерживать {BUTTON_NAMES[s['button']]} в "
                         f"({s['x']}, {s['y']}) {s['seconds']} сек")
+            elif s["type"] == "find":
+                if s["action"] == "hold":
+                    detail = f"удерживать {s['hold']} сек"
+                elif s["action"] == "wait":
+                    detail = f"ждать до {s.get('timeout', 15)} сек"
+                else:
+                    detail = f"{BUTTON_NAMES[s['button']]} x{s.get('times', 1)}"
+                text = f"{i}. Найти «{s['template']}», {detail}"
             elif s["type"] == "progress":
                 mode = "зажать" if s.get("mode", "hold") == "hold" else "кликать"
                 text = (f"{i}. {mode.capitalize()} {BUTTON_NAMES[s['button']]} до заполнения "
@@ -492,6 +632,7 @@ class MacroApp(tk.Tk):
             return
         mouse.hook(self._record_mouse)
         keyboard.hook(self._record_key)
+        self.record_pressed = {}
         self.recording = True
         self.recording_last_t = time.perf_counter()
         self.rec_btn.config(text="■ Остановить запись")
@@ -515,11 +656,25 @@ class MacroApp(tk.Tk):
             self._record_flush({"type": "click", "x": e.x, "y": e.y, "button": e.button})
 
     def _record_key(self, e):
-        if not self.recording or e.event_type != "down":
+        if not self.recording or e.name in ("f8", "f12") or e.name in MODIFIER_KEYS:
             return
-        if e.name in ("f8", "f12") or e.name in MODIFIER_KEYS:
-            return
-        self._record_flush({"type": "key", "key": e.name})
+        if e.event_type == "down":
+            if e.name in self.record_pressed:
+                return
+            t = time.perf_counter()
+            gap = t - self.recording_last_t
+            self.recording_last_t = t
+            if gap > 0.25:
+                self.steps.append({"type": "delay", "seconds": round(gap, 2)})
+            self.record_pressed[e.name] = t
+        elif e.event_type == "up":
+            start = self.record_pressed.pop(e.name, None)
+            if start is None:
+                return
+            hold = max(0.05, round(time.perf_counter() - start, 2))
+            self.recording_last_t = time.perf_counter()
+            self.steps.append({"type": "key", "key": e.name, "times": 1, "hold": hold})
+            self.q.put(("log", f"Записано: клавиша {e.name} (удержание {hold} сек). Шагов: {len(self.steps)}"))
 
     def _record_flush(self, step):
         t = time.perf_counter()
@@ -582,6 +737,37 @@ class MacroApp(tk.Tk):
             mouse.press(s["button"])
             self.stop_event.wait(s["seconds"] / speed)
             mouse.release(s["button"])
+        elif s["type"] == "find":
+            started = time.perf_counter()
+            pos = None
+            while not self.stop_event.is_set():
+                if (time.perf_counter() - started) > s.get("timeout", 15):
+                    self.q.put(("log", f"Образец {s['template']} не найден — шаг пропущен."))
+                    break
+                pos = self._find_template(s["template"], s.get("confidence", 0.8))
+                if pos:
+                    self.q.put(("log", f"Найдено: {s['template']} в {pos}"))
+                    break
+                self.stop_event.wait(0.3)
+            if pos is None:
+                return
+            if s["action"] == "wait":
+                return
+            x, y = pos
+            if s["action"] == "hold":
+                mouse.move(x, y)
+                mouse.press(s["button"])
+                self.stop_event.wait(s["hold"] / speed)
+                mouse.release(s["button"])
+            else:
+                for _ in range(s.get("times", 1)):
+                    if self.stop_event.is_set():
+                        return
+                    mouse.move(x, y)
+                    mouse.press(s["button"])
+                    time.sleep(KEY_PRESS_PAUSE)
+                    mouse.release(s["button"])
+                    self.stop_event.wait(s.get("interval", 0.3) / speed)
         elif s["type"] == "progress":
             started = time.perf_counter()
             mode_hold = s.get("mode", "hold") == "hold"
